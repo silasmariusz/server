@@ -11,10 +11,11 @@ through the connection layer's built-in scheduling.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from aiosendspin.client import SendspinClient
 from aiosendspin.models import Roles
@@ -30,19 +31,29 @@ from aiosendspin.models.visualizer import (
 from hue_entertainment import EntertainmentSession
 from music_assistant_models.enums import PlayerType
 
-from .analyzer import HueAudioAnalyzer
+from .analyzer import HueAudioAnalyzer, PulseSettings
 from .constants import (
     CONF_BRIGHTNESS,
     CONF_CLIENTKEY,
     CONF_COLOR_MODE,
     CONF_HUE_LATENCY_MS,
+    CONF_PALETTE,
+    CONF_PALETTE_ROTATE,
+    CONF_PALETTE_ROTATE_BEATS,
+    CONF_PALETTE_ROTATE_LIST,
+    CONF_PALETTE_ROTATE_SMOOTH,
+    CONF_PERLIGHT_BRIGHTNESS_DATA,
+    CONF_STROBE_LIGHTS,
     CONF_USERNAME,
     DEFAULT_HUE_LATENCY_MS,
+    DEFAULT_PALETTE_ROTATE_BEATS,
+    DEFAULT_PALETTE_ROTATE_SMOOTH,
     SPECTRUM_BINS,
     SPECTRUM_F_MAX,
     SPECTRUM_F_MIN,
     SPECTRUM_SCALE,
 )
+from .strobe_overlay import StrobeSettings
 
 if TYPE_CHECKING:
     from hue_entertainment import EntertainmentArea
@@ -62,6 +73,12 @@ _RENDER_PERIOD_S = 1.0 / _RENDER_RATE_HZ
 # (channel rise/decay, bass baseline) are tuned for ~20 Hz spectrum input; the
 # DTLS render loop runs faster and interpolates.
 _VISUALIZER_RATE_HZ = 20
+
+# Session start retries for slow DTLS handshakes. A failed/slow handshake can
+# leave the area "active" on the bridge, blocking the next attempt (only one
+# session allowed), so we clear it best-effort between attempts and back off.
+_ENTERTAINMENT_START_ATTEMPTS = 6
+_ENTERTAINMENT_START_BACKOFF_S = 1.5
 
 
 class HueEntertainmentBridge:
@@ -109,13 +126,28 @@ class HueEntertainmentBridge:
 
     async def start(self) -> None:
         """Start the bridge — connect as a Sendspin visualizer client."""
+        cfg = self.provider.config
         self._analyzer = HueAudioAnalyzer(
             channels=self.area.channels,
-            color_mode=str(self.provider.config.get_value(CONF_COLOR_MODE) or "smooth"),
-            brightness=int(float(str(self.provider.config.get_value(CONF_BRIGHTNESS) or 100))),
+            color_mode=str(cfg.get_value(CONF_COLOR_MODE) or "smooth"),
+            brightness=int(float(str(cfg.get_value(CONF_BRIGHTNESS) or 100))),
+            strobe_channel_ids=self._strobe_ids_for_area(cfg.get_value(CONF_STROBE_LIGHTS)),
+            strobe=StrobeSettings.from_config(cfg),
+            palette=str(cfg.get_value(CONF_PALETTE) or ""),
+            per_light=self._per_light_for_area(cfg.get_value(CONF_PERLIGHT_BRIGHTNESS_DATA)),
+            pulse=PulseSettings.from_config(cfg),
+        )
+        rotate_smooth = cfg.get_value(CONF_PALETTE_ROTATE_SMOOTH)
+        self._analyzer.set_rotation(
+            bool(cfg.get_value(CONF_PALETTE_ROTATE)),
+            cast("list[str]", cfg.get_value(CONF_PALETTE_ROTATE_LIST) or []),
+            int(
+                float(str(cfg.get_value(CONF_PALETTE_ROTATE_BEATS) or DEFAULT_PALETTE_ROTATE_BEATS))
+            ),
+            DEFAULT_PALETTE_ROTATE_SMOOTH if rotate_smooth is None else bool(rotate_smooth),
         )
 
-        # Create Sendspin client with visualizer role
+        # Create Sendspin client with the visualizer + color roles
         client_id = f"hue-{self.area.id.replace('-', '')[:16]}"
 
         # Register this client as a LIGHT player type with the Sendspin provider
@@ -164,6 +196,8 @@ class HueEntertainmentBridge:
             self.area.name,
             len(self.area.channels),
         )
+        # Make this area + its channels visible in the live browser preview.
+        self.provider.preview_register_area(self.area.id, self.area.name, self.area.channels)
         self.logger.debug(
             "Hue bridge channels for area '%s': %s",
             self.area.name,
@@ -210,15 +244,78 @@ class HueEntertainmentBridge:
         color_mode: str | None = None,
         brightness: int | None = None,
         hue_latency_ms: int | None = None,
+        strobe_selection: object = None,
+        strobe: StrobeSettings | None = None,
+        palette: str | None = None,
+        per_light_data: object = None,
+        pulse: PulseSettings | None = None,
     ) -> None:
         """Update analyzer/bridge settings without restarting the bridge."""
         if self._analyzer:
+            strobe_ids = (
+                self._strobe_ids_for_area(strobe_selection)
+                if strobe_selection is not None
+                else None
+            )
+            per_light = (
+                self._per_light_for_area(per_light_data) if per_light_data is not None else None
+            )
             self._analyzer.update_settings(
                 color_mode=color_mode,
                 brightness=brightness,
+                strobe_channel_ids=strobe_ids,
+                strobe=strobe,
+                palette=palette,
+                per_light=per_light,
+                pulse=pulse,
             )
         if hue_latency_ms is not None:
             self._hue_latency_us = hue_latency_ms * 1000
+
+    def set_rotation(
+        self, enabled: bool, names: list[str], beats: int, smooth: bool = False
+    ) -> None:
+        """Configure bar-aligned palette rotation on this bridge's analyzer."""
+        if self._analyzer:
+            self._analyzer.set_rotation(enabled, names, beats, smooth)
+
+    def _strobe_ids_for_area(self, selection: object) -> set[int]:
+        """Keep only "<this area id>:<channel_id>" entries -> {channel_id}."""
+        ids: set[int] = set()
+        if not isinstance(selection, (list, tuple, set, frozenset)):
+            return ids
+        prefix = f"{self.area.id}:"
+        for entry in selection:
+            text = str(entry)
+            if text.startswith(prefix):
+                try:
+                    ids.add(int(text[len(prefix) :]))
+                except ValueError:
+                    continue
+        return ids
+
+    def _per_light_for_area(self, data: object) -> dict[int, float]:
+        """Parse the per-light brightness blob -> {channel_id: scale 0-1} for this area."""
+        result: dict[int, float] = {}
+        if not data or not isinstance(data, str):
+            return result
+        try:
+            mapping = json.loads(data)
+        except ValueError, TypeError:
+            return result
+        if not isinstance(mapping, dict):
+            return result
+        prefix = f"{self.area.id}:"
+        for key, pct in mapping.items():
+            text = str(key)
+            if not text.startswith(prefix):
+                continue
+            try:
+                channel_id = int(text[len(prefix) :])
+                result[channel_id] = max(0.0, min(100.0, float(pct))) / 100.0
+            except ValueError, TypeError:
+                continue
+        return result
 
     async def _run_client(self) -> None:
         """Connect to the Sendspin server and stay connected."""
@@ -262,7 +359,7 @@ class HueEntertainmentBridge:
         # entertainment stream active.
         adopted = False
         try:
-            for attempt in range(3):
+            for attempt in range(_ENTERTAINMENT_START_ATTEMPTS):
                 try:
                     await session.start(self.area.id)
                     self._session = session
@@ -278,11 +375,19 @@ class HueEntertainmentBridge:
                         self.area.name,
                         err,
                     )
-                    if attempt < 2:
-                        await asyncio.sleep(0.5)
+                    if attempt + 1 < _ENTERTAINMENT_START_ATTEMPTS:
+                        # A failed/slow handshake can leave the area active on the
+                        # bridge, which blocks the retry (only one session allowed).
+                        # Our pinned hue-entertainment has no status query, so clear
+                        # it best-effort before backing off.
+                        with suppress(Exception):
+                            await hue_api.stop_entertainment(self.area.id)
+                        await asyncio.sleep(_ENTERTAINMENT_START_BACKOFF_S)
 
             self.logger.error(
-                "Failed to start entertainment for '%s' after 3 attempts", self.area.name
+                "Failed to start entertainment for '%s' after %d attempts",
+                self.area.name,
+                _ENTERTAINMENT_START_ATTEMPTS,
             )
         finally:
             self._entertainment_starting = False
@@ -416,6 +521,8 @@ class HueEntertainmentBridge:
                 commands = self._analyzer.render(server_now)
                 if commands:
                     self._session.send(commands)
+                    # Tee the exact wire frame to the live browser preview.
+                    self.provider.preview_publish(self.area.id, commands)
         except Exception:
             # One bad tick must not kill the loop: log and reschedule below.
             self.logger.exception("Hue render tick failed for area '%s'", self.area.name)
@@ -433,6 +540,11 @@ class HueEntertainmentBridgeManager:
         self.mass = provider.mass
         self.logger = LOGGER.getChild("bridge_manager")
         self._bridges: dict[str, HueEntertainmentBridge] = {}
+
+    @property
+    def areas(self) -> list[EntertainmentArea]:
+        """Entertainment areas that currently have a live bridge."""
+        return [bridge.area for bridge in self._bridges.values()]
 
     async def setup_bridges(self, areas: list[EntertainmentArea]) -> None:
         """Set up bridges for all entertainment areas."""
@@ -467,6 +579,11 @@ class HueEntertainmentBridgeManager:
         color_mode: str | None = None,
         brightness: int | None = None,
         hue_latency_ms: int | None = None,
+        strobe_selection: object = None,
+        strobe: StrobeSettings | None = None,
+        palette: str | None = None,
+        per_light_data: object = None,
+        pulse: PulseSettings | None = None,
     ) -> None:
         """Update settings on all bridges."""
         for bridge in self._bridges.values():
@@ -474,7 +591,19 @@ class HueEntertainmentBridgeManager:
                 color_mode=color_mode,
                 brightness=brightness,
                 hue_latency_ms=hue_latency_ms,
+                strobe_selection=strobe_selection,
+                strobe=strobe,
+                palette=palette,
+                per_light_data=per_light_data,
+                pulse=pulse,
             )
+
+    def set_rotation(
+        self, enabled: bool, names: list[str], beats: int, smooth: bool = False
+    ) -> None:
+        """Configure bar-aligned palette rotation on all bridges."""
+        for bridge in self._bridges.values():
+            bridge.set_rotation(enabled, names, beats, smooth)
 
     async def stop_all(self) -> None:
         """Stop all bridges."""

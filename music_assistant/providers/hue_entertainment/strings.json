@@ -2,18 +2,18 @@
   "config_entries": {
     "bridge_host": {
       "label": "Bridge IP Address",
-      "description": "IP address of the Philips Hue bridge."
+      "description": "IP address of the Philips Hue bridge, e.g. 192.168.1.50. Find it in the Hue app under Settings > My Hue System > the bridge."
     },
     "bridge_id": {
       "label": "Bridge ID"
     },
     "pair": {
       "label": "Pair with Hue Bridge",
-      "description": "Connects to the bridge and retrieves the API credentials."
+      "description": "Press the round button on top of the Hue bridge first, then click here within 30 seconds to retrieve the API credentials."
     },
     "repair_bridge": {
       "label": "(Re)Pair with Hue Bridge",
-      "description": "Connects to the bridge and retrieves the API credentials."
+      "description": "Press the round button on top of the Hue bridge first, then click here within 30 seconds to retrieve fresh API credentials."
     },
     "hue_username": {
       "label": "Hue API Username"
@@ -21,17 +21,116 @@
     "hue_clientkey": {
       "label": "Hue Client Key"
     },
+    "divider_base": {
+      "label": "Base effects"
+    },
     "brightness": {
-      "label": "Brightness",
-      "description": "Overall light brightness (0-100)."
+      "label": "Overall brightness",
+      "description": "Master brightness for the base light effects, 0-100.\nScales the base Mode only - the strobe has its own brightness limit.\nApplies live while music plays."
     },
     "color_mode": {
-      "label": "Mode",
-      "description": "Visualization style. Smooth (default): spectrum-driven brightness with a slowly drifting palette. Ambient: colour cycling only, no brightness modulation. Flashing: brightness pulse on every beat, stronger on downbeats. Energetic: large brightness swings on hits plus fast palette rotation."
+      "label": "Mode (base effect)",
+      "description": "The base visualization style that runs on every light.\nSmooth: spectrum-driven brightness with a slowly drifting palette.\nAmbient: colour cycling only, no brightness pulse.\nFlashing: a brightness pulse on every beat, stronger on downbeats.\nEnergetic: big brightness swings on hits plus fast palette rotation.\nClub: structure-aware - soft groove pulse in the verse, lights recruited one by one through a build-up, a hard white slam on the drop, and a breathing blackout on breakdowns (adapts to the music automatically; pair with Auto strobe below).\nPulse: dark between beats - on every beat one light fires bright and eases out to black, a different light each beat (a hit chasing around the room), the whole room blooming on the downbeat.\nFor house/techno sets pick Club or Pulse."
+    },
+    "palette": {
+      "label": "Colour palette",
+      "description": "Pick a fixed colour palette for the base effects, or 'Music / album colours' to derive them from what is playing.\n100 palettes are built in (Disco, Rave, Cyberpunk, Ocean, Sunset, ...). The strobe keeps its own independent colour.",
+      "options": {
+        "": "Music / album colours (default)"
+      }
+    },
+    "palette_rotate_smooth": {
+      "label": "Smooth palette rotation",
+      "description": "Only affects palette rotation (set up by dragging palettes into the rotation tray in the live preview).\nON = a short, tempo-locked crossfade (about one beat) glides from one palette to the next.\nOFF = a hard cut that snaps the new palette exactly on the bar - punchier and tighter for a clubbing effect, so turn this OFF for hard house/techno sets.\nApplies live."
+    },
+    "divider_pulse": {
+      "label": "Pulse / Club fire"
+    },
+    "pulse_select": {
+      "label": "Pulse: which light fires",
+      "description": "In the Pulse base mode (and the Club groove) one or more lights fire on each beat and ease out to black.\nChase = the hit travels light to light around the room.\nScatter = a random light each beat.\nSpectrum = the light mapped to the loudest band fires (the bass light on the kick).",
+      "options": {
+        "chase": "Chase (travels light to light)",
+        "scatter": "Scatter (random light each beat)",
+        "spectrum": "Spectrum (loudest band's light)"
+      }
+    },
+    "pulse_downbeat": {
+      "label": "Pulse: bloom on the downbeat",
+      "description": "ON = the whole room flashes together on the first beat of each bar (an accent) and then eases out. OFF = the downbeat fires like any other beat."
+    },
+    "pulse_decay": {
+      "label": "Pulse: fade length (%)",
+      "description": "How much of the gap between beats the fire takes to ease from full down to black.\nHigher = longer, smoother tails that overlap; lower = snappier with more darkness between hits. 90% leaves a brief black moment so each new hit pops out of darkness."
+    },
+    "pulse_floor": {
+      "label": "Pulse: darkness between beats (%)",
+      "description": "Brightness the non-firing lights rest at between beats. 0% = full black (maximum punch, the default); raise it for a dim base glow so the room is never completely dark."
+    },
+    "divider_strobe": {
+      "label": "Strobe overlay"
+    },
+    "strobe_lights": {
+      "label": "Strobe lights",
+      "description": "Tick the individual lights that take part in the strobe. The list shows every light (and every gradient-strip segment) per area as 'Area - Light'.\nSpread 2-6 lights across the room for the strongest effect. Leave EMPTY to turn the strobe off.\nExample: tick 4 ceiling spots and set coverage to 50% -> each burst flashes 2 random ones while the other 2 keep the base effect, swapping on the next burst."
+    },
+    "strobe_coverage": {
+      "label": "Strobe coverage (%)",
+      "description": "Hard cap on how many of the selected strobe lights may flash at the SAME time: k = round(selected x %/100), at least 1.\nWith 4 lights: 25% = 1, 50% = 2, 75% = 3. A fresh random subset is picked each burst and never repeats the exact same set twice in a row.\nApplies live."
+    },
+    "strobe_sensitivity": {
+      "label": "Strobe sensitivity",
+      "description": "How readily the strobe engages.\n100 = runs continuously while anything plays. ~70 (default) = fires on drops/choruses and rests during calm parts. Lower = only the biggest energy jumps trigger it.\nApplies live."
+    },
+    "strobe_enabled": {
+      "label": "Enable strobe",
+      "description": "Master on/off - turn off to pause the strobe without clearing the selection."
+    },
+    "strobe_auto": {
+      "label": "Auto strobe (adapts to the music)",
+      "description": "Let the song-structure detector run the strobe instead of the manual sliders. It stays silent through verses and breakdowns, accelerates through build-ups, and hits a hard 1/16-note strobe on the drop, with the flash rate locked to the detected tempo - tuned for house, trance and techno.\nWhile ON, the Sensitivity, Flash rate and Coverage settings below are ignored (Colour, Brightness, Duty and Blackout still apply).\nExample: turn this on, tick a few Strobe lights, and leave the rest - pairs perfectly with the Club base mode. Applies live."
+    },
+    "strobe_blackout": {
+      "label": "Full blackout between flashes",
+      "description": "ON = the selected lights go fully black between flashes (maximum contrast, classic club strobe).\nOFF = between flashes they fall back to the base effect, so the preset shows through and only the flashing subset blips."
+    },
+    "strobe_color": {
+      "label": "Strobe colour",
+      "description": "Flash colour, independent of the palette and base effects. White = classic strobe."
+    },
+    "strobe_brightness": {
+      "label": "Strobe brightness cap (%)",
+      "description": "Maximum brightness of the strobe flashes. Independent of the overall brightness and the per-light brightness, so the strobe always punches through."
+    },
+    "strobe_flash_hz": {
+      "label": "Flash rate (Hz)",
+      "description": "Flashes per second while engaged. 8-12 reads as a hard club strobe."
+    },
+    "strobe_duty": {
+      "label": "Flash duty (%)",
+      "description": "How much of each flash period is lit. Lower = shorter, punchier blips with more darkness between them (15-30% is a hard, low-duty strobe)."
+    },
+    "strobe_min_hold_ms": {
+      "label": "Min hold (ms)",
+      "description": "Once engaged the strobe stays on at least this long, so it doesn't stutter on a single hit."
+    },
+    "strobe_release_ms": {
+      "label": "Release (ms)",
+      "description": "How long energy must stay low before the strobe disengages and hands lights back to the base effect."
+    },
+    "strobe_beat_sync": {
+      "label": "Sync flashes to the beat",
+      "description": "Align flashes to the detected beat (the musical subdivision of the beat nearest your flash rate). Falls back to the free-running rate when no beat is detected."
+    },
+    "divider_debug": {
+      "label": "Debug & tuning"
     },
     "hue_latency_ms": {
       "label": "Light latency (ms)",
-      "description": "Milliseconds to render light updates ahead of the audio, to offset the Hue bridge and DTLS delay. Increase if the lights lag the music, decrease if they run ahead of it."
+      "description": "How many milliseconds ahead of the audio the lights render, to cancel the Hue bridge + DTLS + network delay.\nIncrease if the lights LAG the music; decrease if they run AHEAD. Typical 50-400 ms.\nApplies instantly (no save) so you can tune it live against the preview."
+    },
+    "live_preview": {
+      "label": "Live preview - click the (?) button to open the preview panel."
     }
   },
   "manifest": {
